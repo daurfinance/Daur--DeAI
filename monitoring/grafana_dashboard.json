@@ -1,0 +1,22 @@
+{
+  "dashboard": {
+    "title": "Daur-AI Monitoring",
+    "panels": [
+      {
+        "type": "graph",
+        "title": "Tasks Processed",
+        "targets": [{"expr": "tasks_processed_total", "format": "time_series"}]
+      },
+      {
+        "type": "graph",
+        "title": "Node Activity",
+        "targets": [{"expr": "node_active_count", "format": "time_series"}]
+      },
+      {
+        "type": "graph",
+        "title": "Token Transfers",
+        "targets": [{"expr": "token_transfer_total", "format": "time_series"}]
+      }
+    ]
+  }
+}

@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install flake8
+      - name: Lint Python
+        run: flake8 ai_core orchestrator nodes_sdk api-marketplace
+      - name: Run Python tests
+        run: pytest tests-audits
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Truffle
+        run: npm install -g truffle
+      - name: Run Truffle tests
+        run: |
+          cd blockchain
+          truffle test ../tests-audits/TaskRegistry.test.js

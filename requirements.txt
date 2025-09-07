@@ -1,0 +1,8 @@
+torch
+sentence-transformers
+web3
+fastapi
+uvicorn
+pytest
+numpy
+onnxruntime
