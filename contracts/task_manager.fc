@@ -1,0 +1,161 @@
+;; DAUR Task Manager Contract
+;; Manages AI task distribution and verification
+
+#include "stdlib.fc";
+
+;; Storage:
+;; admin: slice
+;; tasks_dict: dict<task_id, task_info>
+;; total_tasks: int
+
+(slice, cell, int) load_data() inline {
+    slice ds = get_data().begin_parse();
+    return (
+        ds~load_msg_addr(),
+        ds~load_dict(),
+        ds~load_uint(64)
+    );
+}
+
+() save_data(slice admin, cell tasks, int total_tasks) impure inline {
+    set_data(
+        begin_cell()
+            .store_slice(admin)
+            .store_dict(tasks)
+            .store_uint(total_tasks, 64)
+        .end_cell()
+    );
+}
+
+;; Create new task
+() create_task(
+    int task_id,
+    int task_type,
+    int reward_amount,
+    int deadline
+) impure {
+    (slice admin, cell tasks, int total_tasks) = load_data();
+    
+    cell task_info = begin_cell()
+        .store_uint(task_type, 8)
+        .store_coins(reward_amount)
+        .store_uint(deadline, 32)
+        .store_uint(now(), 32)  ;; created_at
+        .store_uint(0, 1)       ;; is_completed
+        .store_uint(0, 256)     ;; assigned_node
+    .end_cell();
+    
+    tasks~udict_set(256, task_id, task_info.begin_parse());
+    total_tasks += 1;
+    
+    save_data(admin, tasks, total_tasks);
+}
+
+;; Assign task to node
+() assign_task(int task_id, int node_id) impure {
+    (slice admin, cell tasks, int total_tasks) = load_data();
+    
+    (slice task_info, int found?) = tasks.udict_get?(256, task_id);
+    throw_unless(404, found?);
+    
+    int task_type = task_info~load_uint(8);
+    int reward = task_info~load_coins();
+    int deadline = task_info~load_uint(32);
+    int created_at = task_info~load_uint(32);
+    int is_completed = task_info~load_uint(1);
+    
+    throw_if(400, is_completed);  ;; Already completed
+    
+    cell updated_task = begin_cell()
+        .store_uint(task_type, 8)
+        .store_coins(reward)
+        .store_uint(deadline, 32)
+        .store_uint(created_at, 32)
+        .store_uint(0, 1)
+        .store_uint(node_id, 256)
+    .end_cell();
+    
+    tasks~udict_set(256, task_id, updated_task.begin_parse());
+    save_data(admin, tasks, total_tasks);
+}
+
+;; Complete task
+() complete_task(int task_id, int proof_hash) impure {
+    (slice admin, cell tasks, int total_tasks) = load_data();
+    
+    (slice task_info, int found?) = tasks.udict_get?(256, task_id);
+    throw_unless(404, found?);
+    
+    int task_type = task_info~load_uint(8);
+    int reward = task_info~load_coins();
+    int deadline = task_info~load_uint(32);
+    int created_at = task_info~load_uint(32);
+    int is_completed = task_info~load_uint(1);
+    int node_id = task_info~load_uint(256);
+    
+    throw_if(400, is_completed);
+    throw_if(401, now() > deadline);
+    
+    cell updated_task = begin_cell()
+        .store_uint(task_type, 8)
+        .store_coins(reward)
+        .store_uint(deadline, 32)
+        .store_uint(created_at, 32)
+        .store_uint(1, 1)  ;; is_completed = true
+        .store_uint(node_id, 256)
+    .end_cell();
+    
+    tasks~udict_set(256, task_id, updated_task.begin_parse());
+    save_data(admin, tasks, total_tasks);
+}
+
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) {
+        return ();
+    }
+    
+    int op = in_msg_body~load_uint(32);
+    
+    if (op == 1) {  ;; create_task
+        int task_id = in_msg_body~load_uint(256);
+        int task_type = in_msg_body~load_uint(8);
+        int reward = in_msg_body~load_coins();
+        int deadline = in_msg_body~load_uint(32);
+        
+        create_task(task_id, task_type, reward, deadline);
+        return ();
+    }
+    
+    if (op == 2) {  ;; assign_task
+        int task_id = in_msg_body~load_uint(256);
+        int node_id = in_msg_body~load_uint(256);
+        
+        assign_task(task_id, node_id);
+        return ();
+    }
+    
+    if (op == 3) {  ;; complete_task
+        int task_id = in_msg_body~load_uint(256);
+        int proof_hash = in_msg_body~load_uint(256);
+        
+        complete_task(task_id, proof_hash);
+        return ();
+    }
+}
+
+;; Get methods
+(int, cell) get_task_info(int task_id) method_id {
+    (slice admin, cell tasks, int total_tasks) = load_data();
+    (slice task_info, int found?) = tasks.udict_get?(256, task_id);
+    
+    if (found?) {
+        return (found?, begin_cell().store_slice(task_info).end_cell());
+    }
+    
+    return (0, begin_cell().end_cell());
+}
+
+int get_total_tasks() method_id {
+    (slice admin, cell tasks, int total_tasks) = load_data();
+    return total_tasks;
+}

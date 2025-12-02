@@ -1,482 +1,437 @@
 """
-reverse_ai.py — Reverse AI Core for DAUR-AI
+Reverse AI - Goal-First Backward Planning Algorithm
 
-Reverse AI: Goal-First Backward Planning Algorithm
-Instead of forward planning (start → steps → goal), Reverse AI receives the desired
-end result and works backward to determine the optimal sequence of steps and resource
-allocation needed to achieve it.
+This is the core innovation of DAUR-AI: instead of forward planning from current state,
+we start with the goal and work backwards to find the optimal path.
 
-Key Benefits:
-- 40% resource savings through optimal path selection
-- 30% latency reduction via backward pruning
-- Better handling of complex multi-step tasks
-- Efficient resource allocation based on goal requirements
+Key Innovation:
+- Traditional AI: State → Actions → Next State → ... → Goal
+- Reverse AI: Goal → Required State → Required Actions → ... → Current State
 
-Functions:
-- backward_plan: Main reverse planning algorithm (goal → steps)
-- decompose_goal: Break down goal into sub-goals
-- find_prerequisites: Identify prerequisites for each sub-goal
-- optimize_path: Optimize the backward path for resources
-- validate_plan: Validate the generated plan
+This approach is more efficient for complex problems and enables better resource allocation.
 """
 
-from typing import List, Dict, Any, Optional, Tuple
-import json
-from dataclasses import dataclass, asdict
+from typing import List, Dict, Any, Optional, Tuple, Set
+from dataclasses import dataclass, field
 from enum import Enum
+import heapq
+import hashlib
+import json
 
-class TaskComplexity(Enum):
-    """Task complexity levels"""
-    SIMPLE = "simple"      # Single-step tasks
-    MODERATE = "moderate"  # 2-5 steps
-    COMPLEX = "complex"    # 6-15 steps
-    EXPERT = "expert"      # 15+ steps, requires specialized knowledge
 
-class ResourceType(Enum):
-    """Types of computational resources"""
-    CPU = "cpu"
-    GPU = "gpu"
-    MEMORY = "memory"
-    STORAGE = "storage"
-    NETWORK = "network"
+class ActionType(Enum):
+    """Types of actions in the planning space"""
+    COMPUTATION = "computation"
+    DATA_TRANSFER = "data_transfer"
+    MODEL_TRAINING = "model_training"
+    MODEL_INFERENCE = "inference"
+    RESOURCE_ALLOCATION = "resource_allocation"
+
 
 @dataclass
-class Goal:
-    """Represents the desired end result"""
-    description: str
-    expected_output: str
-    constraints: Dict[str, Any]
-    quality_metrics: Dict[str, float]
-    deadline: Optional[int] = None  # in seconds
-
-@dataclass
-class SubGoal:
-    """Intermediate goal in backward decomposition"""
+class State:
+    """Represents a state in the planning space"""
     id: str
-    description: str
-    prerequisites: List[str]  # IDs of prerequisite sub-goals
-    estimated_resources: Dict[ResourceType, float]
-    estimated_time: float  # in seconds
-    confidence: float  # 0.0 to 1.0
+    data: Dict[str, Any]
+    timestamp: int
+    resources: Dict[str, float] = field(default_factory=dict)
+    
+    def __hash__(self):
+        return hash(self.id)
+    
+    def __eq__(self, other):
+        return isinstance(other, State) and self.id == other.id
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'id': self.id,
+            'data': self.data,
+            'timestamp': self.timestamp,
+            'resources': self.resources,
+        }
+
 
 @dataclass
-class Step:
-    """Execution step in the final plan"""
+class Action:
+    """Represents an action that transforms one state to another"""
     id: str
-    action: str
-    inputs: List[str]
-    expected_output: str
-    resources: Dict[ResourceType, float]
-    estimated_time: float
-    fallback_steps: List[str]  # Alternative steps if this fails
+    type: ActionType
+    name: str
+    cost: float
+    duration: int
+    preconditions: List[str] = field(default_factory=list)
+    effects: Dict[str, Any] = field(default_factory=dict)
+    required_resources: Dict[str, float] = field(default_factory=dict)
+    
+    def can_apply(self, state: State) -> bool:
+        """Check if action can be applied to given state"""
+        # Check preconditions
+        for condition in self.preconditions:
+            if not self._check_condition(condition, state):
+                return False
+        
+        # Check resources
+        for resource, amount in self.required_resources.items():
+            if state.resources.get(resource, 0) < amount:
+                return False
+        
+        return True
+    
+    def _check_condition(self, condition: str, state: State) -> bool:
+        """Check if a condition is satisfied in the state"""
+        # Simple condition checking (can be extended)
+        if '=' in condition:
+            key, value = condition.split('=')
+            return state.data.get(key.strip()) == value.strip()
+        return True
+    
+    def apply(self, state: State) -> State:
+        """Apply action to state and return new state"""
+        new_data = state.data.copy()
+        new_data.update(self.effects)
+        
+        new_resources = state.resources.copy()
+        for resource, amount in self.required_resources.items():
+            new_resources[resource] = new_resources.get(resource, 0) - amount
+        
+        new_state = State(
+            id=self._generate_state_id(state, self),
+            data=new_data,
+            timestamp=state.timestamp + self.duration,
+            resources=new_resources,
+        )
+        
+        return new_state
+    
+    @staticmethod
+    def _generate_state_id(state: State, action: 'Action') -> str:
+        """Generate unique ID for resulting state"""
+        data = f"{state.id}:{action.id}"
+        return hashlib.sha256(data.encode()).hexdigest()[:16]
+
 
 @dataclass
-class ReversePlan:
-    """Complete reverse-planned execution strategy"""
-    goal: Goal
-    sub_goals: List[SubGoal]
-    steps: List[Step]
-    total_resources: Dict[ResourceType, float]
-    total_time: float
-    confidence: float
-    optimization_savings: Dict[str, float]  # Savings vs forward planning
+class PlanNode:
+    """Node in the backward planning tree"""
+    state: State
+    action: Optional[Action]
+    parent: Optional['PlanNode']
+    g_cost: float  # Cost from goal to this node
+    h_cost: float  # Heuristic cost from this node to start
+    
+    @property
+    def f_cost(self) -> float:
+        """Total cost (g + h)"""
+        return self.g_cost + self.h_cost
+    
+    def __lt__(self, other):
+        return self.f_cost < other.f_cost
+    
+    def get_path(self) -> List[Tuple[State, Optional[Action]]]:
+        """Get path from start to goal"""
+        path = []
+        current = self
+        while current is not None:
+            path.append((current.state, current.action))
+            current = current.parent
+        return list(reversed(path))
 
 
 class ReverseAI:
     """
-    Reverse AI Engine: Goal-First Backward Planning
+    Reverse AI Planning Engine
     
-    Core algorithm:
-    1. Receive desired goal/output
-    2. Decompose goal into sub-goals (backward)
-    3. Identify prerequisites for each sub-goal
-    4. Build dependency graph
-    5. Optimize resource allocation
-    6. Generate forward execution plan
+    Uses backward search from goal to current state to find optimal plans.
     """
     
-    def __init__(self, model_path: Optional[str] = None):
+    def __init__(self):
+        self.actions: List[Action] = []
+        self.explored: Set[str] = set()
+    
+    def register_action(self, action: Action) -> None:
+        """Register an available action"""
+        self.actions.append(action)
+    
+    def plan(
+        self,
+        current_state: State,
+        goal_state: State,
+        max_iterations: int = 10000,
+    ) -> Optional[List[Tuple[State, Action]]]:
         """
-        Initialize Reverse AI engine
+        Create a plan from current state to goal state using backward search.
         
         Args:
-            model_path: Path to mini-LLM model for planning (optional)
-        """
-        self.model_path = model_path or "mini-llm-ggml.bin"
-        self.llm = None
-        self._load_model()
-    
-    def _load_model(self):
-        """Load mini-LLM for goal decomposition"""
-        try:
-            from llama_cpp import Llama
-            self.llm = Llama(model_path=self.model_path, n_ctx=2048, n_threads=4)
-        except Exception as e:
-            print(f"Warning: Could not load LLM model: {e}")
-            self.llm = None
-    
-    def backward_plan(self, goal: Goal) -> ReversePlan:
-        """
-        Main reverse planning algorithm
-        
-        Args:
-            goal: Desired end result
+            current_state: Starting state
+            goal_state: Desired goal state
+            max_iterations: Maximum search iterations
             
         Returns:
-            Complete reverse-planned execution strategy
+            List of (state, action) pairs representing the plan, or None if no plan found
         """
-        # Step 1: Decompose goal into sub-goals (backward)
-        sub_goals = self.decompose_goal(goal)
+        self.explored.clear()
         
-        # Step 2: Find prerequisites for each sub-goal
-        sub_goals = self.find_prerequisites(sub_goals, goal)
+        # Priority queue for A* search (backward from goal)
+        open_set: List[PlanNode] = []
         
-        # Step 3: Build dependency graph and topological sort
-        sorted_sub_goals = self._topological_sort(sub_goals)
-        
-        # Step 4: Convert sub-goals to executable steps
-        steps = self._sub_goals_to_steps(sorted_sub_goals)
-        
-        # Step 5: Optimize resource allocation
-        steps, savings = self.optimize_path(steps, goal)
-        
-        # Step 6: Calculate total resources and time
-        total_resources, total_time = self._calculate_totals(steps)
-        
-        # Step 7: Validate plan
-        confidence = self.validate_plan(steps, goal)
-        
-        return ReversePlan(
-            goal=goal,
-            sub_goals=sorted_sub_goals,
-            steps=steps,
-            total_resources=total_resources,
-            total_time=total_time,
-            confidence=confidence,
-            optimization_savings=savings
+        # Start from goal
+        start_node = PlanNode(
+            state=goal_state,
+            action=None,
+            parent=None,
+            g_cost=0,
+            h_cost=self._heuristic(goal_state, current_state),
         )
+        
+        heapq.heappush(open_set, start_node)
+        
+        iterations = 0
+        while open_set and iterations < max_iterations:
+            iterations += 1
+            
+            current_node = heapq.heappop(open_set)
+            
+            # Check if we reached the current state (working backward)
+            if self._is_goal_reached(current_node.state, current_state):
+                plan = current_node.get_path()
+                # Remove the first element (goal state with no action)
+                return plan[1:] if len(plan) > 1 else []
+            
+            # Mark as explored
+            self.explored.add(current_node.state.id)
+            
+            # Expand node (find actions that could lead to this state)
+            for action in self._get_applicable_reverse_actions(current_node.state):
+                # Apply action in reverse to get predecessor state
+                predecessor_state = self._reverse_apply(current_node.state, action)
+                
+                if predecessor_state.id in self.explored:
+                    continue
+                
+                g_cost = current_node.g_cost + action.cost
+                h_cost = self._heuristic(predecessor_state, current_state)
+                
+                new_node = PlanNode(
+                    state=predecessor_state,
+                    action=action,
+                    parent=current_node,
+                    g_cost=g_cost,
+                    h_cost=h_cost,
+                )
+                
+                heapq.heappush(open_set, new_node)
+        
+        # No plan found
+        return None
     
-    def decompose_goal(self, goal: Goal) -> List[SubGoal]:
+    def _get_applicable_reverse_actions(self, state: State) -> List[Action]:
         """
-        Decompose goal into sub-goals using backward reasoning
-        
-        Args:
-            goal: Target goal
-            
-        Returns:
-            List of sub-goals in reverse order (from goal to start)
+        Get actions that could have led to this state (reverse reasoning).
+        In reverse planning, we look for actions whose effects match current state.
         """
-        if self.llm:
-            return self._llm_decompose(goal)
-        else:
-            return self._heuristic_decompose(goal)
+        applicable = []
+        
+        for action in self.actions:
+            # Check if action's effects are present in current state
+            if self._effects_match(action, state):
+                applicable.append(action)
+        
+        return applicable
     
-    def _llm_decompose(self, goal: Goal) -> List[SubGoal]:
-        """Use LLM for goal decomposition"""
-        prompt = f"""You are a reverse planning AI. Given this GOAL, work BACKWARD to identify the sub-goals needed.
-
-GOAL: {goal.description}
-EXPECTED OUTPUT: {goal.expected_output}
-CONSTRAINTS: {json.dumps(goal.constraints)}
-
-Think backward: What needs to be true RIGHT BEFORE achieving this goal?
-Then what needs to be true before THAT? Continue until you reach the starting state.
-
-Return JSON array of sub-goals in REVERSE order (goal → start):
-[
-  {{
-    "id": "sg_1",
-    "description": "Final sub-goal (right before main goal)",
-    "prerequisites": [],
-    "estimated_resources": {{"cpu": 0.5, "memory": 1024}},
-    "estimated_time": 10.0,
-    "confidence": 0.9
-  }},
-  ...
-]
-"""
-        
-        try:
-            response = self.llm(prompt, max_tokens=1024, temperature=0.7)
-            data = json.loads(response["choices"][0]["text"])
-            
-            sub_goals = []
-            for sg_data in data:
-                sub_goals.append(SubGoal(
-                    id=sg_data["id"],
-                    description=sg_data["description"],
-                    prerequisites=sg_data.get("prerequisites", []),
-                    estimated_resources={
-                        ResourceType(k): v for k, v in sg_data.get("estimated_resources", {}).items()
-                    },
-                    estimated_time=sg_data.get("estimated_time", 10.0),
-                    confidence=sg_data.get("confidence", 0.8)
-                ))
-            
-            return sub_goals
-        except Exception as e:
-            print(f"LLM decomposition failed: {e}, falling back to heuristic")
-            return self._heuristic_decompose(goal)
+    def _effects_match(self, action: Action, state: State) -> bool:
+        """Check if action's effects are present in the state"""
+        for key, value in action.effects.items():
+            if state.data.get(key) != value:
+                return False
+        return True
     
-    def _heuristic_decompose(self, goal: Goal) -> List[SubGoal]:
-        """Heuristic-based goal decomposition (fallback)"""
-        # Simple heuristic: break down based on complexity
-        description = goal.description.lower()
-        
-        sub_goals = []
-        
-        # Always need validation as final step before goal
-        sub_goals.append(SubGoal(
-            id="sg_validate",
-            description=f"Validate output meets requirements: {goal.expected_output}",
-            prerequisites=[],
-            estimated_resources={ResourceType.CPU: 0.1, ResourceType.MEMORY: 512},
-            estimated_time=5.0,
-            confidence=0.95
-        ))
-        
-        # Add processing step
-        sub_goals.append(SubGoal(
-            id="sg_process",
-            description=f"Process data to generate: {goal.expected_output}",
-            prerequisites=["sg_validate"],
-            estimated_resources={ResourceType.CPU: 1.0, ResourceType.GPU: 0.5, ResourceType.MEMORY: 2048},
-            estimated_time=30.0,
-            confidence=0.85
-        ))
-        
-        # Add data preparation step
-        sub_goals.append(SubGoal(
-            id="sg_prepare",
-            description="Prepare and preprocess input data",
-            prerequisites=["sg_process"],
-            estimated_resources={ResourceType.CPU: 0.5, ResourceType.MEMORY: 1024},
-            estimated_time=15.0,
-            confidence=0.9
-        ))
-        
-        # Add data acquisition step
-        sub_goals.append(SubGoal(
-            id="sg_acquire",
-            description="Acquire required input data",
-            prerequisites=["sg_prepare"],
-            estimated_resources={ResourceType.NETWORK: 1.0, ResourceType.STORAGE: 1024},
-            estimated_time=10.0,
-            confidence=0.95
-        ))
-        
-        return sub_goals
-    
-    def find_prerequisites(self, sub_goals: List[SubGoal], goal: Goal) -> List[SubGoal]:
+    def _reverse_apply(self, state: State, action: Action) -> State:
         """
-        Identify and update prerequisites for each sub-goal
-        
-        Args:
-            sub_goals: List of sub-goals
-            goal: Original goal
-            
-        Returns:
-            Updated sub-goals with correct prerequisites
+        Apply action in reverse: remove effects and restore preconditions.
+        This gives us the state that must have existed before this action.
         """
-        # Prerequisites are already set during decomposition
-        # This method can be extended for more sophisticated dependency analysis
-        return sub_goals
+        new_data = state.data.copy()
+        
+        # Remove effects
+        for key in action.effects.keys():
+            if key in new_data:
+                del new_data[key]
+        
+        # Restore preconditions
+        for condition in action.preconditions:
+            if '=' in condition:
+                key, value = condition.split('=')
+                new_data[key.strip()] = value.strip()
+        
+        # Restore resources
+        new_resources = state.resources.copy()
+        for resource, amount in action.required_resources.items():
+            new_resources[resource] = new_resources.get(resource, 0) + amount
+        
+        predecessor_state = State(
+            id=self._generate_predecessor_id(state, action),
+            data=new_data,
+            timestamp=state.timestamp - action.duration,
+            resources=new_resources,
+        )
+        
+        return predecessor_state
     
-    def optimize_path(self, steps: List[Step], goal: Goal) -> Tuple[List[Step], Dict[str, float]]:
+    def _generate_predecessor_id(self, state: State, action: Action) -> str:
+        """Generate ID for predecessor state"""
+        data = f"{state.id}:reverse:{action.id}"
+        return hashlib.sha256(data.encode()).hexdigest()[:16]
+    
+    def _heuristic(self, state1: State, state2: State) -> float:
         """
-        Optimize execution path for resource efficiency
-        
-        Optimizations:
-        1. Parallel execution of independent steps
-        2. Resource reuse across steps
-        3. Pruning unnecessary steps
-        4. Batch processing where possible
-        
-        Args:
-            steps: Initial execution steps
-            goal: Target goal
-            
-        Returns:
-            Optimized steps and savings metrics
+        Heuristic function for A* search.
+        Estimates cost from state1 to state2.
         """
-        optimized_steps = []
-        savings = {
-            "resource_savings": 0.0,
-            "time_savings": 0.0,
-            "steps_pruned": 0
-        }
+        # Simple heuristic: count differences in data
+        differences = 0
+        all_keys = set(state1.data.keys()) | set(state2.data.keys())
         
-        # Optimization 1: Identify parallel execution opportunities
-        dependency_graph = self._build_dependency_graph(steps)
+        for key in all_keys:
+            if state1.data.get(key) != state2.data.get(key):
+                differences += 1
         
-        # Optimization 2: Resource pooling
-        resource_pool = {}
+        # Add resource differences
+        all_resources = set(state1.resources.keys()) | set(state2.resources.keys())
+        for resource in all_resources:
+            diff = abs(state1.resources.get(resource, 0) - state2.resources.get(resource, 0))
+            differences += diff * 0.1  # Weight resource differences less
         
-        for step in steps:
-            # Check if step can reuse resources from pool
-            reusable_resources = self._check_resource_reuse(step, resource_pool)
-            
-            if reusable_resources:
-                # Reduce resource requirements
-                for res_type, amount in reusable_resources.items():
-                    step.resources[res_type] -= amount
-                    savings["resource_savings"] += amount
-            
-            # Add step to optimized list
-            optimized_steps.append(step)
-            
-            # Update resource pool
-            for res_type, amount in step.resources.items():
-                resource_pool[res_type] = resource_pool.get(res_type, 0) + amount * 0.3  # 30% reusable
-        
-        # Calculate savings percentages
-        original_resources = sum(sum(s.resources.values()) for s in steps)
-        optimized_resources = sum(sum(s.resources.values()) for s in optimized_steps)
-        
-        if original_resources > 0:
-            savings["resource_savings"] = ((original_resources - optimized_resources) / original_resources) * 100
-        
-        return optimized_steps, savings
+        return float(differences)
     
-    def validate_plan(self, steps: List[Step], goal: Goal) -> float:
+    def _is_goal_reached(self, state1: State, state2: State) -> bool:
+        """Check if two states are equivalent (goal reached)"""
+        # Check data equality
+        if state1.data != state2.data:
+            return False
+        
+        # Check resource sufficiency
+        for resource, amount in state2.resources.items():
+            if state1.resources.get(resource, 0) < amount:
+                return False
+        
+        return True
+    
+    def optimize_plan(
+        self,
+        plan: List[Tuple[State, Action]],
+    ) -> List[Tuple[State, Action]]:
         """
-        Validate the generated plan
-        
-        Args:
-            steps: Execution steps
-            goal: Target goal
-            
-        Returns:
-            Confidence score (0.0 to 1.0)
+        Optimize a plan by removing redundant actions.
         """
-        if not steps:
-            return 0.0
+        if not plan:
+            return plan
         
-        # Check 1: All steps have valid inputs/outputs
-        validity_score = 1.0
+        optimized = []
+        i = 0
         
-        # Check 2: Resource constraints met
-        total_resources = {}
-        for step in steps:
-            for res_type, amount in step.resources.items():
-                total_resources[res_type] = total_resources.get(res_type, 0) + amount
-        
-        # Check 3: Time constraints met
-        total_time = sum(step.estimated_time for step in steps)
-        if goal.deadline and total_time > goal.deadline:
-            validity_score *= 0.7  # Penalty for missing deadline
-        
-        # Check 4: Dependencies satisfied
-        step_ids = {step.id for step in steps}
-        for step in steps:
-            for input_id in step.inputs:
-                if input_id not in step_ids and not input_id.startswith("input_"):
-                    validity_score *= 0.9  # Penalty for missing dependencies
-        
-        return max(0.0, min(1.0, validity_score))
-    
-    def _topological_sort(self, sub_goals: List[SubGoal]) -> List[SubGoal]:
-        """Sort sub-goals in execution order using topological sort"""
-        # Build adjacency list
-        graph = {sg.id: sg.prerequisites for sg in sub_goals}
-        sub_goal_map = {sg.id: sg for sg in sub_goals}
-        
-        # Kahn's algorithm
-        in_degree = {sg.id: len(sg.prerequisites) for sg in sub_goals}
-        queue = [sg_id for sg_id, degree in in_degree.items() if degree == 0]
-        sorted_ids = []
-        
-        while queue:
-            current = queue.pop(0)
-            sorted_ids.append(current)
+        while i < len(plan):
+            state, action = plan[i]
             
-            # Reduce in-degree for dependent nodes
-            for sg_id, prereqs in graph.items():
-                if current in prereqs:
-                    in_degree[sg_id] -= 1
-                    if in_degree[sg_id] == 0:
-                        queue.append(sg_id)
+            # Check if we can skip this action
+            can_skip = False
+            if i + 1 < len(plan):
+                next_state, next_action = plan[i + 1]
+                # If next action can be applied directly to current state
+                if next_action and next_action.can_apply(state):
+                    can_skip = True
+            
+            if not can_skip:
+                optimized.append((state, action))
+            
+            i += 1
         
-        return [sub_goal_map[sg_id] for sg_id in sorted_ids]
+        return optimized
     
-    def _sub_goals_to_steps(self, sub_goals: List[SubGoal]) -> List[Step]:
-        """Convert sub-goals to executable steps"""
-        steps = []
+    def to_json(self, plan: List[Tuple[State, Action]]) -> str:
+        """Convert plan to JSON format"""
+        plan_data = []
+        for state, action in plan:
+            plan_data.append({
+                'state': state.to_dict(),
+                'action': {
+                    'id': action.id,
+                    'type': action.type.value,
+                    'name': action.name,
+                    'cost': action.cost,
+                    'duration': action.duration,
+                } if action else None,
+            })
         
-        for i, sg in enumerate(sub_goals):
-            step = Step(
-                id=f"step_{i}",
-                action=sg.description,
-                inputs=[f"step_{sub_goals.index(sub_goal_map)}" 
-                       for prereq_id in sg.prerequisites 
-                       if (sub_goal_map := next((s for s in sub_goals if s.id == prereq_id), None))],
-                expected_output=f"output_{i}",
-                resources=sg.estimated_resources,
-                estimated_time=sg.estimated_time,
-                fallback_steps=[]
-            )
-            steps.append(step)
-        
-        return steps
-    
-    def _calculate_totals(self, steps: List[Step]) -> Tuple[Dict[ResourceType, float], float]:
-        """Calculate total resources and time"""
-        total_resources = {}
-        total_time = 0.0
-        
-        for step in steps:
-            for res_type, amount in step.resources.items():
-                total_resources[res_type] = total_resources.get(res_type, 0) + amount
-            total_time += step.estimated_time
-        
-        return total_resources, total_time
-    
-    def _build_dependency_graph(self, steps: List[Step]) -> Dict[str, List[str]]:
-        """Build dependency graph for parallel execution analysis"""
-        graph = {}
-        for step in steps:
-            graph[step.id] = step.inputs
-        return graph
-    
-    def _check_resource_reuse(self, step: Step, resource_pool: Dict[ResourceType, float]) -> Dict[ResourceType, float]:
-        """Check if step can reuse resources from pool"""
-        reusable = {}
-        
-        for res_type, required in step.resources.items():
-            available = resource_pool.get(res_type, 0)
-            if available > 0:
-                reusable[res_type] = min(required * 0.2, available)  # Max 20% reuse
-        
-        return reusable
+        return json.dumps(plan_data, indent=2)
 
 
-# Example usage
-if __name__ == "__main__":
-    # Create Reverse AI engine
-    engine = ReverseAI()
+# Example usage and testing
+if __name__ == '__main__':
+    # Create Reverse AI planner
+    planner = ReverseAI()
     
-    # Define goal
-    goal = Goal(
-        description="Generate a summary of a 10-page document",
-        expected_output="500-word summary highlighting key points",
-        constraints={"max_tokens": 500, "language": "en"},
-        quality_metrics={"coherence": 0.9, "relevance": 0.95},
-        deadline=120  # 2 minutes
+    # Register available actions
+    planner.register_action(Action(
+        id='train_model',
+        type=ActionType.MODEL_TRAINING,
+        name='Train AI Model',
+        cost=100.0,
+        duration=3600,
+        preconditions=['data_available=true'],
+        effects={'model_trained': 'true'},
+        required_resources={'gpu': 1.0, 'memory': 4096},
+    ))
+    
+    planner.register_action(Action(
+        id='collect_data',
+        type=ActionType.DATA_TRANSFER,
+        name='Collect Training Data',
+        cost=50.0,
+        duration=1800,
+        preconditions=[],
+        effects={'data_available': 'true'},
+        required_resources={'network': 100},
+    ))
+    
+    planner.register_action(Action(
+        id='run_inference',
+        type=ActionType.MODEL_INFERENCE,
+        name='Run Model Inference',
+        cost=10.0,
+        duration=60,
+        preconditions=['model_trained=true'],
+        effects={'prediction': 'available'},
+        required_resources={'gpu': 0.5},
+    ))
+    
+    # Define current state
+    current_state = State(
+        id='start',
+        data={},
+        timestamp=0,
+        resources={'gpu': 2.0, 'memory': 8192, 'network': 1000},
     )
     
-    # Generate reverse plan
-    plan = engine.backward_plan(goal)
+    # Define goal state
+    goal_state = State(
+        id='goal',
+        data={'prediction': 'available'},
+        timestamp=5460,  # 1h 31min
+        resources={},
+    )
     
-    # Print results
-    print(f"Goal: {plan.goal.description}")
-    print(f"\nSub-goals ({len(plan.sub_goals)}):")
-    for sg in plan.sub_goals:
-        print(f"  - {sg.description}")
+    # Create plan
+    print("Planning from current state to goal using Reverse AI...")
+    plan = planner.plan(current_state, goal_state)
     
-    print(f"\nExecution steps ({len(plan.steps)}):")
-    for step in plan.steps:
-        print(f"  {step.id}: {step.action}")
-    
-    print(f"\nTotal time: {plan.total_time:.1f}s")
-    print(f"Confidence: {plan.confidence:.2f}")
-    print(f"Resource savings: {plan.optimization_savings.get('resource_savings', 0):.1f}%")
+    if plan:
+        print(f"\n✅ Plan found with {len(plan)} steps:\n")
+        for i, (state, action) in enumerate(plan, 1):
+            if action:
+                print(f"{i}. {action.name}")
+                print(f"   Cost: {action.cost}, Duration: {action.duration}s")
+                print(f"   State: {state.data}")
+        
+        print(f"\n📊 Plan JSON:\n{planner.to_json(plan)}")
+    else:
+        print("❌ No plan found")
