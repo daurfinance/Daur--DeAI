@@ -96,7 +96,7 @@ Daur Finance Limited владеет портфелем патентоспосо�
 
 ## 4. Доменные имена
 
-- daur.ai
+- daur-ai.com
 - daur-ai.com
 - daur-ai.io
 - reverseai.ai

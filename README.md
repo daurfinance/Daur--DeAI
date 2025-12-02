@@ -105,7 +105,7 @@ docker-compose up -d
 ## 💰 Investment
 
 **Seed Round**: $50M (Q4 2025)  
-**Contact**: invest@daur.ai
+**Contact**: daurfinance@gmail.com
 
 ---
 
@@ -115,16 +115,15 @@ docker-compose up -d
 *Daur Finance Limited (UK, 2022)*
 
 **Hiring**: CTO, Chief Scientist, VP Eng, VP Sales  
-**Careers**: careers@daur.ai
+**Careers**: 711722kz@gmail.com
 
 ---
 
 ## 📞 Contact
 
-- **General**: hello@daur.ai
-- **Investors**: invest@daur.ai
-- **Partnerships**: partnerships@daur.ai
-- **Telegram**: @daur_ai
+- **General**: daurfinance@gmail.com
+- **Investors**: daurfinance@gmail.com
+- **Partnerships**: partnerships@daur-ai.com
 
 ---
 

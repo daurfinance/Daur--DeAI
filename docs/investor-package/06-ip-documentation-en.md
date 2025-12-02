@@ -77,7 +77,7 @@ Daur Finance Limited owns a portfolio of patentable technologies, trademarks, an
 
 ## 4. Domain Names
 
-- daur.ai
+- daur-ai.com
 - daur-ai.com
 - daur-ai.io
 - reverseai.ai

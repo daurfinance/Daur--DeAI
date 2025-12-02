@@ -135,9 +135,8 @@ DAUR-AI transforms 6.8 billion smartphones into a global decentralized supercomp
 
 ## 📞 Contacts
 
-**Email:** invest@daur.ai  
-**Website:** daur.ai  
-**Telegram:** @daur_ai
+**Email:** daurfinance@gmail.com  
+**Website:** daur-ai.com  
 
 **Dauirzhan Abdulmazhit**  
 Founder & CEO, Daur Finance Limited

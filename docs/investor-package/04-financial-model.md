@@ -526,6 +526,6 @@ Comparable: Render Network achieved $3.5B valuation with $50M revenue (70x multi
 
 ---
 
-*This financial model is based on current market data and reasonable assumptions. Actual results may vary. For questions or detailed Excel model, contact invest@daur.ai*
+*This financial model is based on current market data and reasonable assumptions. Actual results may vary. For questions or detailed Excel model, contact daurfinance@gmail.com*
 
 *© 2025 Daur Finance Limited. Confidential.*

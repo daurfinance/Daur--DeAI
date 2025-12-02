@@ -310,7 +310,7 @@ Daur Finance Limited (UK)
 - DAUR-AI protocol and architecture
 - Mobile SDK and API
 - Brand and trademarks
-- Domain names (daur.ai, etc.)
+- Domain names (daur-ai.com, etc.)
 
 ### Employee IP Assignment
 
@@ -363,7 +363,7 @@ Dauirzhan Abdulmazhit
 Founder & CEO  
 Daur Finance Limited
 
-**Email:** legal@daur.ai  
+**Email:** legal@daur-ai.com  
 **Registered Address:** [To be provided]
 
 **Company Secretary:** [To be appointed]

@@ -117,7 +117,7 @@
 
 ## 4. WebSocket API
 
-- **URL:** `wss://api.daur.ai/v1/ws`
+- **URL:** `wss://api.daur-ai.com/v1/ws`
 - **Аутентификация:** Через токен, полученный по REST API.
 - **Подписка на события:**
   ```json

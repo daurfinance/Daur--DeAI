@@ -99,9 +99,8 @@
 Founder & CEO  
 Daur Finance Limited
 
-**Email:** invest@daur.ai  
-**Website:** daur.ai  
-**Telegram:** @daur_ai
+**Email:** daurfinance@gmail.com  
+**Website:** daur-ai.com  
 
 ---
 

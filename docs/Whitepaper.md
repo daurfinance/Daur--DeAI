@@ -150,7 +150,6 @@ Daur-AI is developed by Дәуіржан Абдулмәжит, a visionary entre
 
 ## 10. Contact
 
-**Telegram:** @daur.abd
 
 ## References
 

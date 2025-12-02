@@ -372,9 +372,8 @@ DAUR-AI combines AI + blockchain + mobile, addressing $500B+ TAM. Fair valuation
 
 **Contacts:**
 
-**Email:** invest@daur.ai  
-**Website:** daur.ai  
-**Telegram:** @daur_ai
+**Email:** daurfinance@gmail.com  
+**Website:** daur-ai.com  
 
 **Dauirzhan Abdulmazhit**  
 Founder & CEO  
