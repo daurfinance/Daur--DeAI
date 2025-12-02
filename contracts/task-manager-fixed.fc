@@ -1,0 +1,461 @@
+;; DAUR-AI Task Manager Contract - Полнофункциональная реализация
+;; Смарт-контракт для управления задачами в сети Daur-AI
+
+#include "imports/stdlib.fc";
+
+;; Константы
+const int min_tons_for_storage = 50000000; ;; 0.05 TON
+const int gas_consumption = 20000000; ;; 0.02 TON
+const int max_task_duration = 86400; ;; 24 часа в секундах
+
+;; Операции
+const int op::create_task = 1;
+const int op::submit_result = 2;
+const int op::validate_result = 3;
+const int op::distribute_rewards = 4;
+const int op::cancel_task = 5;
+const int op::register_node = 6;
+const int op::update_node_status = 7;
+const int op::claim_reward = 8;
+
+;; Статусы задач
+const int status::pending = 0;
+const int status::assigned = 1;
+const int status::completed = 2;
+const int status::validated = 3;
+const int status::cancelled = 4;
+const int status::failed = 5;
+
+;; Статусы узлов
+const int node_status::offline = 0;
+const int node_status::online = 1;
+const int node_status::busy = 2;
+const int node_status::maintenance = 3;
+
+;; Ошибки
+const int error::not_authorized = 401;
+const int error::task_not_found = 404;
+const int error::invalid_status = 400;
+const int error::insufficient_funds = 402;
+const int error::deadline_exceeded = 408;
+const int error::node_not_found = 404;
+const int error::invalid_proof = 403;
+
+;; Хранилище данных
+;; admin_address:MsgAddress jetton_master:MsgAddress task_counter:uint64 node_counter:uint64 
+;; tasks:^Cell nodes:^Cell rewards:^Cell
+(slice, slice, int, int, cell, cell, cell) load_data() inline {
+    slice ds = get_data().begin_parse();
+    return (
+        ds~load_msg_addr(), ;; admin_address
+        ds~load_msg_addr(), ;; jetton_master
+        ds~load_uint(64), ;; task_counter
+        ds~load_uint(64), ;; node_counter
+        ds~load_ref(), ;; tasks dictionary
+        ds~load_ref(), ;; nodes dictionary
+        ds~load_ref()  ;; rewards dictionary
+    );
+}
+
+() save_data(slice admin_address, slice jetton_master, int task_counter, int node_counter, cell tasks, cell nodes, cell rewards) impure inline {
+    set_data(begin_cell()
+        .store_slice(admin_address)
+        .store_slice(jetton_master)
+        .store_uint(task_counter, 64)
+        .store_uint(node_counter, 64)
+        .store_ref(tasks)
+        .store_ref(nodes)
+        .store_ref(rewards)
+        .end_cell());
+}
+
+;; Структура задачи
+;; creator:MsgAddress reward:Coins deadline:uint32 status:uint8 assigned_node:uint64 
+;; task_data:^Cell result_data:^Cell validation_count:uint8
+cell pack_task_data(slice creator, int reward, int deadline, int status, int assigned_node, cell task_data, cell result_data, int validation_count) inline {
+    return begin_cell()
+        .store_slice(creator)
+        .store_coins(reward)
+        .store_uint(deadline, 32)
+        .store_uint(status, 8)
+        .store_uint(assigned_node, 64)
+        .store_ref(task_data)
+        .store_ref(result_data)
+        .store_uint(validation_count, 8)
+        .end_cell();
+}
+
+(slice, int, int, int, int, cell, cell, int) unpack_task_data(cell task_cell) inline {
+    slice ds = task_cell.begin_parse();
+    return (
+        ds~load_msg_addr(), ;; creator
+        ds~load_coins(), ;; reward
+        ds~load_uint(32), ;; deadline
+        ds~load_uint(8), ;; status
+        ds~load_uint(64), ;; assigned_node
+        ds~load_ref(), ;; task_data
+        ds~load_ref(), ;; result_data
+        ds~load_uint(8) ;; validation_count
+    );
+}
+
+;; Структура узла
+;; owner:MsgAddress stake:Coins reputation:uint32 status:uint8 last_activity:uint32
+;; capabilities:^Cell performance_stats:^Cell
+cell pack_node_data(slice owner, int stake, int reputation, int status, int last_activity, cell capabilities, cell performance_stats) inline {
+    return begin_cell()
+        .store_slice(owner)
+        .store_coins(stake)
+        .store_uint(reputation, 32)
+        .store_uint(status, 8)
+        .store_uint(last_activity, 32)
+        .store_ref(capabilities)
+        .store_ref(performance_stats)
+        .end_cell();
+}
+
+(slice, int, int, int, int, cell, cell) unpack_node_data(cell node_cell) inline {
+    slice ds = node_cell.begin_parse();
+    return (
+        ds~load_msg_addr(), ;; owner
+        ds~load_coins(), ;; stake
+        ds~load_uint(32), ;; reputation
+        ds~load_uint(8), ;; status
+        ds~load_uint(32), ;; last_activity
+        ds~load_ref(), ;; capabilities
+        ds~load_ref() ;; performance_stats
+    );
+}
+
+;; Генерация случайного числа для выбора узла
+int pseudo_random(int seed, int max_value) inline {
+    int hash_value = cell_hash(begin_cell().store_uint(seed, 64).store_uint(now(), 32).end_cell());
+    return hash_value % max_value;
+}
+
+;; Выбор подходящего узла для задачи
+int select_node_for_task(cell nodes, int node_counter, cell task_requirements) inline {
+    int attempts = 0;
+    int max_attempts = min(node_counter, 10);
+    
+    while (attempts < max_attempts) {
+        int node_id = pseudo_random(attempts + now(), node_counter) + 1;
+        
+        (cell node_data, int found) = nodes.udict_get?(64, node_id);
+        if (found) {
+            (slice owner, int stake, int reputation, int status, int last_activity, cell capabilities, cell performance_stats) = unpack_node_data(node_data);
+            
+            ;; Проверка статуса узла и репутации
+            if ((status == node_status::online) & (reputation >= 50) & (stake >= 1000000000)) { ;; минимум 1 DAUR стейк
+                return node_id;
+            }
+        }
+        attempts += 1;
+    }
+    
+    return 0; ;; узел не найден
+}
+
+;; Валидация результата задачи
+int validate_task_result(cell task_data, cell result_data, cell validation_proof) inline {
+    ;; Простая валидация на основе хеша
+    ;; В реальной реализации здесь будет более сложная логика
+    slice task_slice = task_data.begin_parse();
+    slice result_slice = result_data.begin_parse();
+    slice proof_slice = validation_proof.begin_parse();
+    
+    ;; Проверка базовой структуры результата
+    if (result_slice.slice_refs() < 1) {
+        return 0; ;; неверная структура
+    }
+    
+    ;; Проверка временных меток
+    int result_timestamp = proof_slice~load_uint(32);
+    if ((result_timestamp < now() - 3600) | (result_timestamp > now())) {
+        return 0; ;; неверная временная метка
+    }
+    
+    return 1; ;; результат валиден
+}
+
+;; Расчет вознаграждения на основе качества и времени выполнения
+int calculate_reward(int base_reward, int quality_score, int completion_time, int deadline) inline {
+    ;; Базовое вознаграждение * коэффициент качества * коэффициент времени
+    int quality_multiplier = (quality_score * 100) / 100; ;; 0-100%
+    int time_bonus = 0;
+    
+    if (completion_time < (deadline / 2)) {
+        time_bonus = base_reward / 10; ;; 10% бонус за быстрое выполнение
+    }
+    
+    return (base_reward * quality_multiplier / 100) + time_bonus;
+}
+
+;; Основная функция получения сообщений
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) {
+        return ();
+    }
+    
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    
+    if (flags & 1) {
+        return ();
+    }
+    
+    slice sender_address = cs~load_msg_addr();
+    
+    int op = in_msg_body~load_uint(32);
+    int query_id = in_msg_body~load_uint(64);
+    
+    (slice admin_address, slice jetton_master, int task_counter, int node_counter, cell tasks, cell nodes, cell rewards) = load_data();
+    
+    if (op == op::create_task) {
+        throw_unless(error::insufficient_funds, msg_value >= min_tons_for_storage + gas_consumption);
+        
+        int reward_amount = in_msg_body~load_coins();
+        int deadline = in_msg_body~load_uint(32);
+        cell task_data = in_msg_body~load_ref();
+        cell requirements = in_msg_body~load_ref();
+        
+        ;; Проверка дедлайна
+        throw_unless(error::deadline_exceeded, deadline > now());
+        throw_unless(error::deadline_exceeded, deadline <= now() + max_task_duration);
+        
+        ;; Увеличение счетчика задач
+        task_counter += 1;
+        
+        ;; Выбор узла для выполнения задачи
+        int selected_node = select_node_for_task(nodes, node_counter, requirements);
+        
+        int task_status = status::pending;
+        if (selected_node > 0) {
+            task_status = status::assigned;
+            
+            ;; Обновление статуса узла
+            (cell node_data, int found) = nodes.udict_get?(64, selected_node);
+            if (found) {
+                (slice owner, int stake, int reputation, int node_status_val, int last_activity, cell capabilities, cell performance_stats) = unpack_node_data(node_data);
+                cell updated_node = pack_node_data(owner, stake, reputation, node_status::busy, now(), capabilities, performance_stats);
+                nodes~udict_set(64, selected_node, updated_node);
+            }
+        }
+        
+        ;; Создание задачи
+        cell empty_result = begin_cell().end_cell();
+        cell task = pack_task_data(sender_address, reward_amount, deadline, task_status, selected_node, task_data, empty_result, 0);
+        tasks~udict_set(64, task_counter, task);
+        
+        ;; Сохранение данных
+        save_data(admin_address, jetton_master, task_counter, node_counter, tasks, nodes, rewards);
+        
+        ;; Отправка подтверждения
+        var msg = begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(sender_address)
+            .store_coins(0)
+            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .store_uint(op::create_task, 32)
+            .store_uint(query_id, 64)
+            .store_uint(task_counter, 64)
+            .store_uint(selected_node, 64);
+        send_raw_message(msg.end_cell(), 64);
+        
+        return ();
+    }
+    
+    if (op == op::submit_result) {
+        int task_id = in_msg_body~load_uint(64);
+        cell result_data = in_msg_body~load_ref();
+        cell validation_proof = in_msg_body~load_ref();
+        
+        ;; Получение задачи
+        (cell task_data, int found) = tasks.udict_get?(64, task_id);
+        throw_unless(error::task_not_found, found);
+        
+        (slice creator, int reward, int deadline, int task_status, int assigned_node, cell original_task_data, cell old_result, int validation_count) = unpack_task_data(task_data);
+        
+        ;; Проверка статуса и дедлайна
+        throw_unless(error::invalid_status, task_status == status::assigned);
+        throw_unless(error::deadline_exceeded, now() <= deadline);
+        
+        ;; Проверка, что результат отправляет назначенный узел
+        (cell node_data, int node_found) = nodes.udict_get?(64, assigned_node);
+        throw_unless(error::node_not_found, node_found);
+        
+        (slice node_owner, int stake, int reputation, int node_status_val, int last_activity, cell capabilities, cell performance_stats) = unpack_node_data(node_data);
+        throw_unless(error::not_authorized, equal_slices(sender_address, node_owner));
+        
+        ;; Валидация результата
+        int is_valid = validate_task_result(original_task_data, result_data, validation_proof);
+        throw_unless(error::invalid_proof, is_valid);
+        
+        ;; Обновление задачи
+        cell updated_task = pack_task_data(creator, reward, deadline, status::completed, assigned_node, original_task_data, result_data, 1);
+        tasks~udict_set(64, task_id, updated_task);
+        
+        ;; Обновление статуса узла
+        cell updated_node = pack_node_data(node_owner, stake, reputation + 10, node_status::online, now(), capabilities, performance_stats);
+        nodes~udict_set(64, assigned_node, updated_node);
+        
+        ;; Сохранение данных
+        save_data(admin_address, jetton_master, task_counter, node_counter, tasks, nodes, rewards);
+        
+        ;; Отправка уведомления создателю задачи
+        var msg = begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(creator)
+            .store_coins(gas_consumption)
+            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .store_uint(op::submit_result, 32)
+            .store_uint(query_id, 64)
+            .store_uint(task_id, 64)
+            .store_ref(result_data);
+        send_raw_message(msg.end_cell(), 1);
+        
+        return ();
+    }
+    
+    if (op == op::distribute_rewards) {
+        int task_id = in_msg_body~load_uint(64);
+        int quality_score = in_msg_body~load_uint(8); ;; 0-100
+        
+        ;; Получение задачи
+        (cell task_data, int found) = tasks.udict_get?(64, task_id);
+        throw_unless(error::task_not_found, found);
+        
+        (slice creator, int reward, int deadline, int task_status, int assigned_node, cell original_task_data, cell result_data, int validation_count) = unpack_task_data(task_data);
+        
+        ;; Проверка статуса и авторизации
+        throw_unless(error::invalid_status, task_status == status::completed);
+        throw_unless(error::not_authorized, equal_slices(sender_address, creator) | equal_slices(sender_address, admin_address));
+        
+        ;; Расчет финального вознаграждения
+        int completion_time = now();
+        int final_reward = calculate_reward(reward, quality_score, completion_time, deadline);
+        
+        ;; Получение данных узла
+        (cell node_data, int node_found) = nodes.udict_get?(64, assigned_node);
+        throw_unless(error::node_not_found, node_found);
+        
+        (slice node_owner, int stake, int reputation, int node_status_val, int last_activity, cell capabilities, cell performance_stats) = unpack_node_data(node_data);
+        
+        ;; Добавление вознаграждения в словарь
+        (cell existing_reward, int reward_found) = rewards.udict_get?(267, node_owner);
+        int total_reward = final_reward;
+        if (reward_found) {
+            slice reward_slice = existing_reward.begin_parse();
+            int previous_reward = reward_slice~load_coins();
+            total_reward += previous_reward;
+        }
+        
+        cell reward_cell = begin_cell().store_coins(total_reward).end_cell();
+        rewards~udict_set(267, node_owner, reward_cell);
+        
+        ;; Обновление статуса задачи
+        cell updated_task = pack_task_data(creator, reward, deadline, status::validated, assigned_node, original_task_data, result_data, validation_count + 1);
+        tasks~udict_set(64, task_id, updated_task);
+        
+        ;; Сохранение данных
+        save_data(admin_address, jetton_master, task_counter, node_counter, tasks, nodes, rewards);
+        
+        return ();
+    }
+    
+    if (op == op::register_node) {
+        throw_unless(error::insufficient_funds, msg_value >= min_tons_for_storage + gas_consumption);
+        
+        int stake_amount = in_msg_body~load_coins();
+        cell capabilities = in_msg_body~load_ref();
+        
+        ;; Проверка минимального стейка
+        throw_unless(error::insufficient_funds, stake_amount >= 1000000000); ;; минимум 1 DAUR
+        
+        ;; Увеличение счетчика узлов
+        node_counter += 1;
+        
+        ;; Создание узла
+        cell empty_stats = begin_cell().end_cell();
+        cell node = pack_node_data(sender_address, stake_amount, 100, node_status::online, now(), capabilities, empty_stats);
+        nodes~udict_set(64, node_counter, node);
+        
+        ;; Сохранение данных
+        save_data(admin_address, jetton_master, task_counter, node_counter, tasks, nodes, rewards);
+        
+        ;; Отправка подтверждения
+        var msg = begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(sender_address)
+            .store_coins(0)
+            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .store_uint(op::register_node, 32)
+            .store_uint(query_id, 64)
+            .store_uint(node_counter, 64);
+        send_raw_message(msg.end_cell(), 64);
+        
+        return ();
+    }
+    
+    if (op == op::claim_reward) {
+        ;; Получение накопленного вознаграждения
+        (cell reward_data, int found) = rewards.udict_get?(267, sender_address);
+        throw_unless(error::node_not_found, found);
+        
+        slice reward_slice = reward_data.begin_parse();
+        int reward_amount = reward_slice~load_coins();
+        
+        throw_unless(error::insufficient_funds, reward_amount > 0);
+        
+        ;; Очистка вознаграждения
+        rewards~udict_delete?(267, sender_address);
+        
+        ;; Сохранение данных
+        save_data(admin_address, jetton_master, task_counter, node_counter, tasks, nodes, rewards);
+        
+        ;; Отправка токенов (здесь должна быть интеграция с jetton minter)
+        var msg = begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(jetton_master)
+            .store_coins(gas_consumption)
+            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .store_uint(21, 32) ;; mint operation
+            .store_uint(query_id, 64)
+            .store_slice(sender_address)
+            .store_coins(reward_amount)
+            .store_ref(begin_cell().end_cell()); ;; empty master message
+        send_raw_message(msg.end_cell(), 1);
+        
+        return ();
+    }
+    
+    throw(0xffff);
+}
+
+;; Get методы
+(int, int, int, int) get_stats() method_id {
+    (slice admin_address, slice jetton_master, int task_counter, int node_counter, cell tasks, cell nodes, cell rewards) = load_data();
+    return (task_counter, node_counter, 0, 0); ;; можно добавить больше статистики
+}
+
+cell get_task_data(int task_id) method_id {
+    (slice admin_address, slice jetton_master, int task_counter, int node_counter, cell tasks, cell nodes, cell rewards) = load_data();
+    (cell task_data, int found) = tasks.udict_get?(64, task_id);
+    return task_data;
+}
+
+cell get_node_data(int node_id) method_id {
+    (slice admin_address, slice jetton_master, int task_counter, int node_counter, cell tasks, cell nodes, cell rewards) = load_data();
+    (cell node_data, int found) = nodes.udict_get?(64, node_id);
+    return node_data;
+}
+
+int get_pending_reward(slice node_address) method_id {
+    (slice admin_address, slice jetton_master, int task_counter, int node_counter, cell tasks, cell nodes, cell rewards) = load_data();
+    (cell reward_data, int found) = rewards.udict_get?(267, node_address);
+    if (found) {
+        slice reward_slice = reward_data.begin_parse();
+        return reward_slice~load_coins();
+    }
+    return 0;
+}

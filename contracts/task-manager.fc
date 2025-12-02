@@ -1,0 +1,129 @@
+'''
+Task Manager Smart Contract
+Автор: Дауиржан Нуридинулы
+
+Этот контракт управляет жизненным циклом задач в сети Daur-AI.
+'''
+
+#include "stdlib.fc";
+#include "params.fc";
+#include "opcodes.fc";
+
+
+;; Task Statuses
+int const TASK_STATUS_CREATED = 1;
+int const TASK_STATUS_ASSIGNED = 2;
+int const TASK_STATUS_COMPLETED = 3;
+int const TASK_STATUS_FAILED = 4;
+int const TASK_STATUS_CANCELLED = 5;
+
+
+;; Task structure
+(int, int, slice, int, int, int, int, slice, slice) load_task(int task_id) {
+    slice ds = get_data().begin_parse();
+    cell tasks = ds~load_dict(256);
+    
+    (slice task_slice, int success) = tasks.udict_get?(256, task_id);
+    throw_unless(100, success);
+    
+    return (
+        task_slice~load_uint(32),  ;; status
+        task_slice~load_coins(),   ;; reward
+        task_slice~load_msg_addr(),;; customer_address
+        task_slice~load_uint(256), ;; assigned_node_id
+        task_slice~load_uint(64),  ;; created_at
+        task_slice~load_uint(64),  ;; completed_at
+        task_slice~load_uint(64),  ;; deadline
+        task_slice~load_slice(256),;; input_cid
+        task_slice~load_slice(256) ;; result_cid
+    );
+}
+
+() save_task(int task_id, int status, int reward, slice customer_address, int assigned_node_id, int created_at, int completed_at, int deadline, slice input_cid, slice result_cid) {
+    slice ds = get_data().begin_parse();
+    cell tasks = ds~load_dict(256);
+    
+    cell task_cell = begin_cell()
+        .store_uint(status, 32)
+        .store_coins(reward)
+        .store_slice(customer_address)
+        .store_uint(assigned_node_id, 256)
+        .store_uint(created_at, 64)
+        .store_uint(completed_at, 64)
+        .store_uint(deadline, 64)
+        .store_slice(input_cid)
+        .store_slice(result_cid)
+    .end_cell();
+    
+    tasks~udict_set(256, task_id, task_cell.begin_parse());
+    
+    set_data(begin_cell().store_dict(tasks).end_cell());
+}
+
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) {
+        return ();
+    }
+
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    slice sender_address = cs~load_msg_addr();
+
+    int op = in_msg_body~load_uint(32);
+    int query_id = in_msg_body~load_uint(64);
+
+    if (op == op::create_task()) {
+        int task_id = in_msg_body~load_uint(256);
+        int reward = in_msg_body~load_coins();
+        int deadline = in_msg_body~load_uint(64);
+        slice input_cid = in_msg_body~load_slice(256);
+        
+        save_task(task_id, TASK_STATUS_CREATED, reward, sender_address, 0, now(), 0, deadline, input_cid, null());
+        return ();
+    }
+
+    if (op == op::assign_task()) {
+        int task_id = in_msg_body~load_uint(256);
+        int node_id = in_msg_body~load_uint(256);
+        
+        (int status, int reward, slice customer_address, _, _, _, int deadline, slice input_cid, _) = load_task(task_id);
+        throw_unless(101, status == TASK_STATUS_CREATED);
+        
+        save_task(task_id, TASK_STATUS_ASSIGNED, reward, customer_address, node_id, now(), 0, deadline, input_cid, null());
+        return ();
+    }
+
+    if (op == op::complete_task()) {
+        int task_id = in_msg_body~load_uint(256);
+        slice result_cid = in_msg_body~load_slice(256);
+        
+        (int status, int reward, slice customer_address, int assigned_node_id, int created_at, _, int deadline, slice input_cid, _) = load_task(task_id);
+        throw_unless(102, status == TASK_STATUS_ASSIGNED);
+        
+        save_task(task_id, TASK_STATUS_COMPLETED, reward, customer_address, assigned_node_id, created_at, now(), deadline, input_cid, result_cid);
+        
+        ;; Send reward to the node
+        cell msg = begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(get_node_address(assigned_node_id)) ;; Need a function to get node address by ID
+            .store_coins(reward)
+            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .end_cell();
+        send_raw_message(msg, 1);
+        
+        return ();
+    }
+
+    throw(0);
+}
+
+(int, int, slice, int, int, int, int, slice, slice) get_task_info(int task_id) method_id {
+    return load_task(task_id);
+}
+
+slice get_node_address(int node_id) method_id {
+    ;; This is a placeholder. In a real implementation, you would have a separate contract
+    ;; or a dictionary to store node addresses.
+    return null();
+}
